@@ -86,6 +86,10 @@ async function connectServer(transport, options = {}) {
   const primitives = await listPrimitives(client)
   spinner.success(`Connected, server capabilities: ${Object.keys(client.getServerCapabilities()).join(', ')}`)
 
+  if (options.nonInteractive) {
+    return client
+  }
+
   while (true) {
     const { primitive } = await prompts(
       {
@@ -203,9 +207,9 @@ export async function runWithConfigNonInteractive(configPath, serverName, comman
       serverConfig.env = { ...serverConfig.env, PATH: process.env.PATH }
     }
 
-    const transport = new StdioClientTransport(serverConfig)
-    const client = await createClient()
-    await client.connect(transport)
+    if (serverConfig.ignoreCertificateErrors) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    }
 
     let result
     let args = {}
@@ -218,16 +222,43 @@ export async function runWithConfigNonInteractive(configPath, serverName, comman
       }
     }
 
-    if (command === 'call-tool') {
-      result = await client.callTool({ name: target, arguments: args })
-    } else if (command === 'read-resource') {
-      result = await client.readResource({ uri: target })
-    } else if (command === 'get-prompt') {
-      result = await client.getPrompt({ name: target, arguments: args })
+    if (serverConfig.url || serverConfig.sse) {
+      const uri = serverConfig.url || serverConfig.sse
+      const transportFactory = (authProvider) =>
+        serverConfig.url
+          ? new StreamableHTTPClientTransport(new URL(uri), { authProvider })
+          : new SSEClientTransport(new URL(uri), { authProvider })
+
+      const client = await connectRemoteServer(uri, transportFactory, { ...options, nonInteractive: true })
+
+      if (command === 'call-tool') {
+        result = await client.callTool({ name: target, arguments: args })
+      } else if (command === 'read-resource') {
+        result = await client.readResource({ uri: target })
+      } else if (command === 'get-prompt') {
+        result = await client.getPrompt({ name: target, arguments: args })
+      }
+
+      await client.close()
+    } else {
+      const transport = new StdioClientTransport(serverConfig)
+      const client = await createClient()
+      await client.connect(transport)
+
+      if (command === 'call-tool') {
+        result = await client.callTool({ name: target, arguments: args })
+      } else if (command === 'read-resource') {
+        result = await client.readResource({ uri: target })
+      } else if (command === 'get-prompt') {
+        result = await client.getPrompt({ name: target, arguments: args })
+      }
+
+      await client.close()
     }
 
-    await client.close()
-    console.log(JSON.stringify(result, null, 2))
+    if (result) {
+      console.log(JSON.stringify(result, null, 2))
+    }
   } catch (err) {
     console.error(JSON.stringify({ error: err.message }, null, 2))
     process.exit(1)
@@ -245,11 +276,21 @@ export async function runWithConfig(configPath, options = {}) {
   if (serverConfig.env) {
     serverConfig.env = { ...serverConfig.env, PATH: process.env.PATH }
   }
-  const transport = new StdioClientTransport(serverConfig)
-  try {
-    await connectServer(transport, options)
-  } finally {
-    await transport.close()
+  if (serverConfig.ignoreCertificateErrors) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+  }
+
+  if (serverConfig.url) {
+    await runWithURL(serverConfig.url, options)
+  } else if (serverConfig.sse) {
+    await runWithSSE(serverConfig.sse, options)
+  } else {
+    const transport = new StdioClientTransport(serverConfig)
+    try {
+      await connectServer(transport, options)
+    } finally {
+      await transport.close()
+    }
   }
 }
 
@@ -263,7 +304,7 @@ async function connectRemoteServer(uri, initialTransport, options = {}) {
   }
   const transport = createTransport()
   try {
-    await connectServer(transport, options)
+    return await connectServer(transport, options)
   } catch (err) {
     if (!(err instanceof UnauthorizedError)) {
       throw err
@@ -274,7 +315,7 @@ async function connectRemoteServer(uri, initialTransport, options = {}) {
     await transport.finishAuth(authCode)
     spinner.success('Authorization successful')
     // connect again with a new transport
-    await connectServer(createTransport(), options)
+    return await connectServer(createTransport(), options)
   }
 }
 

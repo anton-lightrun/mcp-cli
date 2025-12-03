@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lightrun": {
+      "url": "https://localhost:8080/mcp",
+      "ignoreCertificateErrors": true
+    }
+  }
+}

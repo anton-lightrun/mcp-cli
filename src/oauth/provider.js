@@ -19,12 +19,15 @@ export class McpOAuthClientProvider {
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       client_name: 'mcp-cli',
-      client_uri: 'https://github.com/wong2/mcp-cli',
+      client_uri: 'https://mcp-cli',
     }
   }
 
   async clientInformation() {
-    return config.get(`oauth.${this.serverId}.clientInformation`)
+    return {
+      client_id: 'web_app',
+      redirect_uris: [this.redirectUrl],
+    }
   }
 
   async saveClientInformation(clientInformation) {
