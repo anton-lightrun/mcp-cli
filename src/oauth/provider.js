@@ -24,10 +24,11 @@ export class McpOAuthClientProvider {
   }
 
   async clientInformation() {
-    return {
-      client_id: 'web_app',
-      redirect_uris: [this.redirectUrl],
-    }
+    return config.get(`oauth.${this.serverId}.clientInformation`);
+    // return {
+    //   client_id: 'web_app',
+    //   redirect_uris: [this.redirectUrl],
+    // }
   }
 
   async saveClientInformation(clientInformation) {

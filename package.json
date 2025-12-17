@@ -11,7 +11,9 @@
     "src",
     "README.md"
   ],
-  "scripts": {},
+  "scripts": {
+    "start": "node src/cli.js"
+  },
   "keywords": [
     "MCP"
   ],
