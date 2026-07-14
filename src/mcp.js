@@ -1,8 +1,6 @@
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import getPort from 'get-port'
 import { isEmpty } from 'lodash-es'
@@ -12,7 +10,9 @@ import { readFile } from 'node:fs/promises'
 import prompts from 'prompts'
 import colors from 'yoctocolors'
 import { OAuthCallbackServer } from './oauth/callback.js'
+import { createRemoteTransport } from './oauth/logging.js'
 import { McpOAuthClientProvider } from './oauth/provider.js'
+import { enhanceTransportWithScopes } from './oauth/scopes.js'
 import {
   createSpinner,
   formatDescription,
@@ -30,6 +30,27 @@ async function createClient() {
     logger.debug('[server log]:', notification.params.data)
   })
   return client
+}
+
+async function connectClient(client, transport) {
+  let initializeResponse
+  const request = client.request.bind(client)
+
+  client.request = async (message, ...args) => {
+    const response = await request(message, ...args)
+    if (message?.method === 'initialize') {
+      initializeResponse = response
+    }
+    return response
+  }
+
+  try {
+    await client.connect(transport)
+  } finally {
+    client.request = request
+  }
+
+  return initializeResponse
 }
 
 async function listPrimitives(client) {
@@ -75,16 +96,18 @@ async function connectServer(transport, options = {}) {
   const spinner = createSpinner('Connecting to server...')
 
   let client
+  let initializeResponse
   try {
     client = await createClient()
-    await client.connect(transport)
+    initializeResponse = await connectClient(client, transport)
   } catch (err) {
     spinner.stop()
     throw err
   }
 
   const primitives = await listPrimitives(client)
-  spinner.success(`Connected, server capabilities: ${Object.keys(client.getServerCapabilities()).join(', ')}`)
+  spinner.success('Connected')
+  prettyPrint(initializeResponse)
 
   if (options.nonInteractive) {
     return client
@@ -130,6 +153,8 @@ async function connectServer(transport, options = {}) {
         logger.log('\n')
       }
     } else if (primitive.type === 'tool') {
+      logger.log(colors.cyan(`[tool schema] ${primitive.value.name}`))
+      prettyPrint(primitive.value)
       const args = await readJSONSchemaInputs(primitive.value.inputSchema)
       spinner = createSpinner(`Using tool ${primitive.value.name}...`)
       result = await client.callTool({ name: primitive.value.name, arguments: args }).catch((err) => {
@@ -224,12 +249,11 @@ export async function runWithConfigNonInteractive(configPath, serverName, comman
 
     if (serverConfig.url || serverConfig.sse) {
       const uri = serverConfig.url || serverConfig.sse
-      const transportFactory = (authProvider) =>
-        serverConfig.url
-          ? new StreamableHTTPClientTransport(new URL(uri), { authProvider })
-          : new SSEClientTransport(new URL(uri), { authProvider })
-
-      const client = await connectRemoteServer(uri, transportFactory, { ...options, nonInteractive: true })
+      const client = await connectRemoteServer(uri, {
+        sse: Boolean(serverConfig.sse),
+        oauthScopes: serverConfig.oauthScopes,
+        nonInteractive: true,
+      })
 
       if (command === 'call-tool') {
         result = await client.callTool({ name: target, arguments: args })
@@ -243,7 +267,8 @@ export async function runWithConfigNonInteractive(configPath, serverName, comman
     } else {
       const transport = new StdioClientTransport(serverConfig)
       const client = await createClient()
-      await client.connect(transport)
+      const initializeResponse = await connectClient(client, transport)
+      prettyPrint(initializeResponse)
 
       if (command === 'call-tool') {
         result = await client.callTool({ name: target, arguments: args })
@@ -281,9 +306,9 @@ export async function runWithConfig(configPath, options = {}) {
   }
 
   if (serverConfig.url) {
-    await runWithURL(serverConfig.url, options)
+    await runWithURL(serverConfig.url, { ...options, oauthScopes: serverConfig.oauthScopes })
   } else if (serverConfig.sse) {
-    await runWithSSE(serverConfig.sse, options)
+    await runWithSSE(serverConfig.sse, { ...options, oauthScopes: serverConfig.oauthScopes })
   } else {
     const transport = new StdioClientTransport(serverConfig)
     try {
@@ -294,13 +319,16 @@ export async function runWithConfig(configPath, options = {}) {
   }
 }
 
-async function connectRemoteServer(uri, initialTransport, options = {}) {
+async function connectRemoteServer(uri, options = {}) {
   const oauthConfig = { port: await getPort({ port: 49153 }), path: '/oauth/callback' }
   const createTransport = () => {
     const serverId = crypto.createHash('sha256').update(uri).digest('hex')
     const oauthRedirectUrl = `http://127.0.0.1:${oauthConfig.port}${oauthConfig.path}`
-    const authProvider = new McpOAuthClientProvider(serverId, oauthRedirectUrl)
-    return initialTransport(authProvider)
+    const authProvider = new McpOAuthClientProvider(serverId, oauthRedirectUrl, {
+      oauthScopes: options.oauthScopes,
+    })
+    const transport = createRemoteTransport(uri, authProvider, { sse: options.sse })
+    return enhanceTransportWithScopes(transport, options.oauthScopes)
   }
   const transport = createTransport()
   try {
@@ -320,9 +348,9 @@ async function connectRemoteServer(uri, initialTransport, options = {}) {
 }
 
 export async function runWithSSE(uri, options = {}) {
-  await connectRemoteServer(uri, (authProvider) => new SSEClientTransport(new URL(uri), { authProvider }), options)
+  await connectRemoteServer(uri, { ...options, sse: true })
 }
 
 export async function runWithURL(uri, options = {}) {
-  await connectRemoteServer(uri, (authProvider) => new StreamableHTTPClientTransport(new URL(uri), { authProvider }), options)
+  await connectRemoteServer(uri, options)
 }

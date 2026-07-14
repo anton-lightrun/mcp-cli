@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "lightrun": {
-      "url": "https://localhost:8080/mcp",
+      "url": "https://dogfood.internal.lightrun.com/mcp",
       "ignoreCertificateErrors": true
     }
   }

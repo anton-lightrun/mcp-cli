@@ -12,7 +12,8 @@
     "README.md"
   ],
   "scripts": {
-    "start": "node src/cli.js"
+    "start": "node src/cli.js",
+    "dump-tools": "node scripts/dump-tool-descriptions.js"
   },
   "keywords": [
     "MCP"
